@@ -131,6 +131,6 @@ En este proyecto: `FileIO.downloadFeed()` dentro del `flatMap` es un efecto secu
 
 ---
 
-## Decisiones de diseño relevantes
+## Decisiones de diseño relevantes (opcional no se si hace falta)
 
 TO DO: cuando esten ejercicios 2 a 5
