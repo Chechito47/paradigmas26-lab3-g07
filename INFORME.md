@@ -2,53 +2,79 @@
 
 **Materia:** Paradigmas de Programación 2026 — FAMAF  
 **Laboratorio:** Lab 3 — Reddit NER con Apache Spark
+**Grupo:** Nº 7
+**Integrantes**:
+* Aranda, María Jose
+* Pinilla, Lautaro
+* Sabino, Lucas
+* Sosa, Santiago
+
+---
+
+## Índice
+1. [Ejercicio 1](#ejercicio-1--identificar-las-regiones-paralelizables)
+2. [Ejercicio 2](#2-introducción-problema-a-estudiar)
+3. [Ejercicio 3](#3-métodos-modelo-y-parámetros)
 
 ---
 
 ## Ejercicio 1 — Identificar las regiones paralelizables
 
 ### a) Diagrama de flujo del pipeline
-
+Estos son los pasos del pipeline, indicando el tipo de entrada y salida, y si se ejecuta en el **driver** o en los **workers**:
 ```
-[Driver]  Leer suscripciones
-          FileIO.readSubscriptions(filePath)
-          │
-          │  List[Subscription]
-          ▼
-[Driver]  sc.parallelize(subscriptions)
-          │
-          │  RDD[Subscription]
-          ▼
-[Workers] flatMap: descargar feed + parsear posts
-          FileIO.downloadFeed(url) + JsonParser.parsePosts(json, name)
-          │
-          │  RDD[Post]
-          ▼
-[Workers] filter: descartar posts vacíos
-          Analyzer.filterEmptyPosts equivalente: post.title.nonEmpty && post.selftext.nonEmpty
-          │
-          │  RDD[Post]
-          ▼
-[Workers] flatMap: extraer entidades nombradas     <-- List[NamedEntity] (del diccionario, cargado en driver)
-          Analyzer.detectEntities(text, dictionary)
-          │
-          │  RDD[NamedEntity]
-          ▼
-[Workers] map: convertir a par clave-valor
-          entity => ((entity.entityType, entity.text), 1)
-          │
-          │  RDD[((String, String), Int)]
-          ▼
-[Workers] reduceByKey: sumar conteos     <-- BARRERA DE SINCRONIZACIÓN
-          │
-          │  RDD[((String, String), Int)]
-          ▼
-[Driver]  collect() + sortBy(-count, type, name) + take(topK)
-          │
-          │  Array[((String, String), Int)]
-          ▼
-[Driver]  Formatear e imprimir
-          Formatters.formatEntityStats(entityCounts, topK)
+1.  [Driver]  Lectura del archivo de suscripciones
+              FileIO.readSubscriptions(filePath)
+              │
+              │  List[Option[Subscription]]
+              ▼
+2.  [Driver]  Filtrado de suscripciones malformadas (eliminar None)
+              subscriptionOpts.flatten
+              │
+              │  List[Subscription]
+              ▼
+3.  [Driver]  Distribucion a los workers
+              sc.parallelize(subscriptions)
+              │
+              │  RDD[Subscription]
+              ▼
+4.  [Workers] flatMap: descargar feed + parsear posts
+              FileIO.downloadFeed(url) + JsonParser.parsePosts(json, name)
+              │
+              │  RDD[Post] (sin filtrar)
+              ▼
+5.  [Workers] filter: descartar posts vacíos
+              Analyzer.filterEmptyPosts equivalente: post.title.nonEmpty && post.selftext.nonEmpty
+              │
+              │  RDD[Post] (posts con titulo y texto no vacos)
+              │
+6.  [Driver]  Carga del diccionario de entidades <-- String(entitiesDir)
+              Dictionary.loadAll(entitiesDir)
+              │
+              │  List[NamedEntity]
+              ▼
+7.  [Workers] flatMap: extraer entidades nombradas
+              Analyzer.detectEntities(text, dictionary)
+              │
+              │  RDD[NamedEntity]
+              ▼
+8.  [Workers] map: convertir a par clave-valor
+              entity => ((entity.entityType, entity.text), 1)
+              │
+              │  RDD[((String, String), Int)]
+              ▼
+9.  [Workers] reduceByKey: conteo     <-- BARRERA DE SINCRONIZACIÓN
+              Analyzer.countEntities(allEntities) && Analyzer.countByType(allEntities)
+              │
+              │  RDD[((String, String), Int)]
+              ▼
+10.  [Driver] Recolección al driver
+              collect() + sortBy(-count, type, name) + take(topK)
+              │
+              │  Array[((String, String), Int)]
+              ▼
+11.  [Driver] Formatear e imprimir
+              Formatters.formatEntityStats(entityCounts, topK)
 ```
 
 Para tener en cuenta: `Dictionary.loadAll(entitiesDir)` devuelve un `List[NamedEntity]` y se ejecuta en el **driver** antes de que comience el pipeline distribuido. Ese valor se serializa y se envía a cada worker cuando se ejecuta el `flatMap` de extracción de entidades.
@@ -57,25 +83,26 @@ Para tener en cuenta: `Dictionary.loadAll(entitiesDir)` devuelve un `List[NamedE
 
 ### b) Clasificación de cada paso según la abstracción de Spark
 
-| Paso | Abstracción Spark | Justificación |
-|------|-------------------|---------------|
-| Leer suscripciones desde JSON | *(ninguna — se ejecuta en el driver)* | Operación local sobre un archivo. El resultado se pasa luego a `sc.parallelize`. |
-| `sc.parallelize(subscriptions)` | *(acción de creación de RDD)* | No es una transformación sino el punto de entrada al grafo distribuido. Distribuye los elementos del `List[Subscription]` entre los workers. |
-| Descargar feed + parsear posts | `flatMap` | Cada `Subscription` produce cero o más `Post` (puede fallar la descarga → 0 posts, o devolver N posts). Es independiente por feed. |
-| Filtrar posts vacíos | `filter` | Cada `Post` se evalúa de forma independiente. `filter` es un caso especial de `flatMap` (devuelve 0 o 1 elemento), pero Spark lo expone como abstracción propia. |
-| Extraer entidades nombradas | `flatMap` | Cada `Post` produce cero o más `NamedEntity`. La cantidad varía según el contenido del post. Es independiente entre posts. |
-| Convertir entidad a par clave-valor | `map` | Cada `NamedEntity` produce exactamente un par `((String, String), Int)`. Relación 1-a-1, sin dependencia entre elementos. |
-| Sumar conteos por entidad | `reduceByKey` | El conteo total de una entidad depende de todos los posts de todos los workers. Es imposible calcularlo sin combinar resultados globalmente. |
-| Ordenar y tomar top-K | `sortBy` + `take` (acción) | `sortBy` es una transformación que produce un RDD ordenado. `take` es una acción que materializa el resultado en el driver. |
-| Formatear e imprimir | *(ninguna — se ejecuta en el driver)* | Operación local sobre los datos ya recolectados con `collect`/`take`. |
+| Paso | ¿Transformación sobre RDD? | Abstracción Spark | Justificación |
+|------|----------------------------|-------------------|----------------|
+| 1 | Operación local | **Ninguna** | Operación local sobre un archivo. El resultado se pasa luego a `sc.parallelize` |
+| 2 | Operación local | **Ninguna** | `flatten` local |
+| 3 | Creación del RDD | **Ninguna** | `parallelize` no es transformación, sino el punto de entrada al grafo distribuido. Distribuye los elementos del `List[Subscription]` entre los workers |
+| 4 | Sí (0..N posts) | `flatMap` | Cada `Subscription` produce cero o más `Post` (puede fallar la descarga → 0 posts, o devolver N posts) |
+| 5 | Sí (0 o 1 post) | **Ninguna** | Es `filter`, no está en la lista (aunque es un caso especial de `flatMap`) |
+| 6 | Operación local | **Ninguna** | Carga de diccionario en driver |
+| 7 | Sí (0..N entidades) | `flatMap` | Cada `Post` produce cero o más `NamedEntity` |
+| 8 | Sí (1 a 1) | `map` | Cada `NamedEntity` produce exactamente un par `((String, String), Int)`. Relación 1-a-1, sin dependencia entre elementos |
+| 9 | Sí (agrupa y suma) | `reduceByKey` | Conteo global por clave, depende de todos los posts de todos los workers |
+| 10 | No es transformación (acción) | **Ninguna** | `collect` es una acción, no transformación |
+| 11 | Operación local | **Ninguna** | Ordenamiento e impresión en driver |
 
-**¿Hay algún paso que no encaje en ninguna de estas abstracciones?**
-
-Sí, dos pasos no son transformaciones distribuidas:
-
-1. **Leer el archivo de suscripciones y cargar el diccionario** (`FileIO.readSubscriptions`, `Dictionary.loadAll`): son operaciones de I/O local que ocurren completamente en el driver, antes de que Spark entre en escena. No tienen sentido como operaciones distribuidas porque dependen de un único archivo accesible desde el driver.
-
-2. **Formatear e imprimir el resultado final**: ocurre en el driver luego de `collect`. Es lógica de presentación sobre datos ya agregados; distribuirla no tendría beneficio.
+**¿Hay algún paso que no encaje en ninguna de estas abstracciones?**  
+Si, los pasos 1, 2, 3, 5, 6, 10 y 11:
+* Los pasos 1, 2, 3 y 6 por ser operaciones locales del driver
+* El paso 5 porque es `filter` (Spark lo tiene, pero no es `map`/`flatMap`/`reduceByKey`)
+* El paso 10 porque es una acción
+* El paso 11 porque es ordenamiento local
 
 ---
 
