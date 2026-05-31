@@ -186,3 +186,6 @@ Se nos pide manejar estos casos de error:
 * Hicimos que la clase `NamedEntity` extienda a `Serializable`, para que funcione con Spark
 
 **Nota**: Los errores que aparecen al ejecutar son normales de spark
+
+### ¿qué pasaría si dejaran propagar la excepción?
+Si una excepción escapa del flatMap, el worker que estaba procesando esa particion va a fallar. Pero spark tiene tolerancia a fallos, reintenta la tarea automaticamente (por defecto hasta 4 veces) antes de lanzar una execpcion al driver. O sea que un solo post problematico puede tirar abajo el procesamiento de todos los demas.
