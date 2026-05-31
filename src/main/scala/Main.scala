@@ -6,6 +6,13 @@ object Main {
       case None => return // scopt prints error messages
     }
 
+    // Spark session local mode
+    val spark = SparkSession.builder()
+      .appName("RedditNER")
+      .master("local[*]")
+      .getOrCreate()
+    val sc = spark.sparkContext
+
     // Load subscriptions
     val subscriptionOpts = FileIO.readSubscriptions(cmdArgs.subscriptionFile)
 

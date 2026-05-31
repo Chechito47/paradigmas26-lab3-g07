@@ -5,24 +5,50 @@ import org.json4s.jackson.JsonMethods._
 object FileIO {
 
   /**
-   * Read subscriptions from JSON file.
-   * @param filePath path to subscriptions file
-   * @return list of options: Some(Subscription) for valid entries, None for malformed entries
-   *         returns empty list if file not found
+   * Leer suscripciones de un archivo JSON
+   * Devuelve Left(errorMessage) si el archivo no existe o el JSON es no es valido
+   * Devuelve Right(suscripciones) con las suscripciones validas (puede ser vacio)
+   * Imprime un warning por cada suscripcion mal formada y la skipea
    */
-  def readSubscriptions(filePath: String): List[Option[Subscription]] = {
+  def readSubscriptions(filePath: String): Either[String, List[Subscription]] = {
     implicit val formats: Formats = DefaultFormats
-    val source = Source.fromFile(filePath)
-    val content = source.mkString
-    source.close()
 
-    val json = parse(content)
-    val subscriptions = json.extract[List[Map[String, String]]]
+    // Intentamos leer el archivo. Si no existe devolvemos left con el mensaje de error
+    val content = try {
+      val source = Source.fromFile(filePath)
+      val text = source.mkString
+      source.close()
+      text
+    } catch {
+      // El archivo no existe o no se puede leer devuelvo Left
+      case _: java.io.FileNotFoundException =>
+        return Left(s"Error: Could not load $filePath - file not found")
+    }
 
-    subscriptions.map { sub =>
-      Some(Subscription(sub("name"), sub("url")))
+    // Intentamos parsear el JSON
+    val rawList: List[Map[String, String]] = try {
+      parse(content).extract[List[Map[String, String]]]
+    } catch {
+      //Si el JSON es invalido devuelvo Left
+      case _: Exception =>
+        return Left(s"Error: Could not load $filePath - invalid JSON format")
+    }
+
+    // Procesamos cada entrada: si le falta name o url, imprimimos warning y la salteamos
+    // get("name") devuelve Option[String]: Some si existe, None si no
+    val subscriptions = rawList.flatMap { sub =>
+      (sub.get("name"), sub.get("url")) match {
+        // Caso entrada valida
+        case(Some(name), Some(url)) =>
+          Some(Subscription(name, url))
+        // Cualquier otro caso => descartado (falta un campo)
+        case _ =>
+          println("Warning: Skipping malformed subscription (missing 'name' or 'url' field)")
+          None
     }
   }
+  Right(subscriptions)
+}
 
   /**
    * Download feed JSON from URL.

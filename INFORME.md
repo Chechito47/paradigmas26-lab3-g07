@@ -158,6 +158,15 @@ En este proyecto: `FileIO.downloadFeed()` dentro del `flatMap` es un efecto secu
 
 ---
 
-## Decisiones de diseño relevantes (opcional no se si hace falta)
+# Decisiones de diseño relevantes (opcional no se si hace falta)
+## Ejercicio 2 — Paralelizar la descarga de feeds
+### readSubscriptions
+Se nos pide manejar estos casos de error:
+* Si el archivo no existe -> Error: Could not load $filePath - file not found
+* Si el JSON es invalido -> Error: Could not load $filePath - invalid JSON format
+* Si una suscripcion le falta name o url → Warning: Skipping malformed subscription (missing 'name' or 'url' field)
+* Si no hay suscripciones válidas → Error: No valid subscriptions found
 
-TO DO: cuando esten ejercicios 2 a 5
+*Los dos primeros son errores fatales => el programa termina*  
+*Los dos ultimos son warnings => se interrumpe la ejecucion sin terminar*
+

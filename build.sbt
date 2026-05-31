@@ -15,5 +15,7 @@ ThisBuild / javaOptions ++= Seq(
 
 libraryDependencies ++= Seq(
   "org.json4s" %% "json4s-jackson" % "3.7.0-M11",
-  "com.github.scopt" %% "scopt" % "4.1.0"
+  "com.github.scopt" %% "scopt" % "4.1.0",
+  "org.apache.spark" %% "spark-core" % "3.5.1",
+  "org.apache.spark" %% "spark-sql"  % "3.5.1"
 )
