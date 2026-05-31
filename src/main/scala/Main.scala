@@ -61,7 +61,10 @@ object Main {
           List.empty[Post]
         // Si la descarga es exitosa parseamos los posts del JSON
         case Some(content) =>
-          JsonParser.parsePosts(content, subscription.name)
+          val posts = JsonParser.parsePosts(content, subscription.name)
+          if (posts.isEmpty)
+            println(s"Warning: Failed to parse posts from '${subscription.name}' (${subscription.url})")
+          posts
       }
     }
 
@@ -116,8 +119,15 @@ object Main {
     // --- PASO 7: Extraer entidades nombradas (worker) ---
     // Para cada post, detectamos todas las entidades que aparecen en su texto
     val entitiesRDD = filteredPostsRDD.flatMap { post =>
-      val combinedText = post.title + " " + post.selftext
-      Analyzer.detectEntities(combinedText, dictionary)
+      try {
+        val combinedText = post.title + " " + post.selftext
+        Analyzer.detectEntities(combinedText, dictionary)
+      } catch {
+        // Si lanza alguna excepcion
+        case e: Exception =>
+          println(s"Warning: Failed to analyze post '${post.title}': ${e.getMessage}")
+          List.empty[NamedEntity]
+      }
     }
 
 

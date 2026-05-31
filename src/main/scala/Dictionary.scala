@@ -29,23 +29,17 @@ object Dictionary {
    * @return combined list of all entities from all successfully loaded dictionaries
    */
   def loadAll(entitiesDir: String): List[NamedEntity] = {
-    // Check if entities directory exists
-    val dataDir = new java.io.File(entitiesDir)
+    def loadWithWarning(file: String, entityType: String): List[NamedEntity] = {
+      loadFromFile(s"$entitiesDir/$file", entityType).getOrElse {
+        println(s"Warning: Could not load $entitiesDir/$file")
+        List()
+      }
+    }
 
-    val peopleOpt = loadFromFile(s"$entitiesDir/people.txt", "Person")
-
-    val universitiesOpt = loadFromFile(s"$entitiesDir/universities.txt", "University")
-
-    val languagesOpt = loadFromFile(s"$entitiesDir/languages.txt", "ProgrammingLanguage")
-
-    val organizationsOpt = loadFromFile(s"$entitiesDir/organizations.txt", "Organization")
-
-    val placesOpt = loadFromFile(s"$entitiesDir/places.txt", "Place")
-
-    peopleOpt.getOrElse(List()) :::
-      universitiesOpt.getOrElse(List()) :::
-      languagesOpt.getOrElse(List()) :::
-      organizationsOpt.getOrElse(List()) :::
-      placesOpt.getOrElse(List())
+    loadWithWarning("people.txt",        "Person")              :::
+    loadWithWarning("universities.txt",  "University")          :::
+    loadWithWarning("languages.txt",     "ProgrammingLanguage") :::
+    loadWithWarning("organizations.txt", "Organization")        :::
+    loadWithWarning("places.txt",        "Place")
   }
 }
