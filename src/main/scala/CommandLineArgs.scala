@@ -1,7 +1,7 @@
 import scopt.OParser
 
 case class CommandLineArgs(
-  subscriptionFile: String = "data/valid_subscriptions.json",
+  subscriptionFile: String = "data/local_subscriptions.json",
   entitiesDir: String = "data/valid_entities",
   topK: Int = 10
 )
