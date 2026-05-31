@@ -170,3 +170,5 @@ Se nos pide manejar estos casos de error:
 *Los dos primeros son errores fatales => el programa termina*  
 *Los dos ultimos son warnings => se interrumpe la ejecucion sin terminar*
 
+### downloadFeed
+* Si no se puede hacer fetch de una url -> "Warning: Failed to download from '${subscription.name}' (${subscription.url})"

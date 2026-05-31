@@ -6,9 +6,11 @@ object FileIO {
 
   /**
    * Leer suscripciones de un archivo JSON
-   * Devuelve Left(errorMessage) si el archivo no existe o el JSON es no es valido
-   * Devuelve Right(suscripciones) con las suscripciones validas (puede ser vacio)
    * Imprime un warning por cada suscripcion mal formada y la skipea
+   * @param filePath path al subscriptions file
+   * @return Left(errorMessage) si el archivo no existe o el JSON es no es valido
+   *         Right(suscripciones) con las suscripciones validas
+   *         Puede devolver vacio
    */
   def readSubscriptions(filePath: String): Either[String, List[Subscription]] = {
     implicit val formats: Formats = DefaultFormats
@@ -51,30 +53,43 @@ object FileIO {
 }
 
   /**
-   * Download feed JSON from URL.
-   * @param url Reddit feed URL
-   * @return Option containing JSON as String, None on network error or timeout
+   * Descargar feed JSON de una URL
+   * Imprime un warning con el nombre de la suscripcion si la descarga falla
+   * @param url Reddit feed URL, subscriptionName
+   * @return Option Some(Content)(JSON as String), None si hay error de red o timeout
    */
-  def downloadFeed(url: String): Option[String] = {
-    val source = Source.fromURL(url)
-    val content = source.mkString
-    source.close()
-    Some(content)
+  def downloadFeed(url: String, subscriptionName: String): Option[String] = {
+    try {
+      val source = Source.fromURL(url)
+      val content = source.mkString
+      source.close()
+      Some(content)
+    } catch {
+      // Error de red, timeout
+      case _: Exception =>
+        None
+    }
   }
 
   /**
-   * Read dictionary file line by line.
-   * @param filePath path to dictionary file
-   * @return Option containing list of entities, None if file missing
+   * Lee el archivo de diccionario linea por linea
+   * @param filePath path al dictionary file
+   * @return Option con lista de entidades, None si el archivo no existe
    */
   def readDictionaryFile(filePath: String): Option[List[String]] = {
-    val source = Source.fromFile(filePath)
-    val lines = source.getLines()
-      .map(_.trim)
-      .filter(_.nonEmpty)
-      .filterNot(_.startsWith("#"))
-      .toList
-    source.close()
-    Some(lines)
+    try {
+      val source = Source.fromFile(filePath)
+      val lines = source.getLines()
+        .map(_.trim)
+        .filter(_.nonEmpty)
+        .filterNot(_.startsWith("#"))
+        .toList
+      source.close()
+      Some(lines)
+    } catch {
+      // Archivo no existe
+      case _: Exception =>
+        None
+    }
   }
 }
