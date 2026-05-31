@@ -162,13 +162,27 @@ En este proyecto: `FileIO.downloadFeed()` dentro del `flatMap` es un efecto secu
 ## Ejercicio 2 — Paralelizar la descarga de feeds
 ### readSubscriptions
 Se nos pide manejar estos casos de error:
-* Si el archivo no existe -> Error: Could not load $filePath - file not found
-* Si el JSON es invalido -> Error: Could not load $filePath - invalid JSON format
-* Si una suscripcion le falta name o url → Warning: Skipping malformed subscription (missing 'name' or 'url' field)
-* Si no hay suscripciones válidas → Error: No valid subscriptions found
+* Si el archivo no existe -> `Error: Could not load $filePath - file not found`
+* Si el JSON es invalido -> `Error: Could not load $filePath - invalid JSON format`
+* Si una suscripcion le falta name o url -> `Warning: Skipping malformed subscription (missing 'name' or 'url' field)`
 
 *Los dos primeros son errores fatales => el programa termina*  
-*Los dos ultimos son warnings => se interrumpe la ejecucion sin terminar*
+*La ultima es warning => se interrumpe la ejecucion sin terminar*
 
 ### downloadFeed
-* Si no se puede hacer fetch de una url -> "Warning: Failed to download from '${subscription.name}' (${subscription.url})"
+* Tenemos que agregar el argumento `subscriptionName: String` para poder hacer un warning relacionado a esta funcion
+
+### main
+* Si no hay suscripciones válidas -> `Error: No valid subscriptions found`
+* Si no se puede hacer fetch de una url -> `"Warning: Failed to download from '${subscription.name}' (${subscription.url})" (aca es donde sucede)`
+* No llamamos a filterEmptyPosts ya que ahora tenemos un RDD y no se puede (deberiamos cambiar la implementacion para eso)
+* Tenemos solo 3 estadisticas: **totalPosts, filteredCount, removedCount**. Las que faltan son parte del ejercicio 4
+* Se adapto el formateo
+
+### CommandLineArgs
+* Indicamos que lea el archivo del mock `local_subcriptions.json`
+
+### NamedEntity
+* Hicimos que la clase `NamedEntity` extienda a `Serializable`, para que funcione con Spark
+
+**Nota**: Los errores que aparecen al ejecutar son normales de spark
