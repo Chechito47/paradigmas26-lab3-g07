@@ -80,7 +80,7 @@ object Main {
           }
           posts
       }
-    }
+    }.cache()
 
 
     // --- PASO 5: Filtrar posts vacios (worker) ---
@@ -95,7 +95,7 @@ object Main {
       postsFiltered.add(1)
     }
     isValid
-    }
+    }.cache()
 
 
     // --- PASO INTERMEDIO: Calcular estadisticas (worker) ---
@@ -104,6 +104,12 @@ object Main {
     val totalPosts    = postsRDD.count()
     val filteredCount = filteredPostsRDD.count()
     val removedCount  = totalPosts - filteredCount
+
+    //valores de los acumuladores
+    val feedsSuccessValue  = feedsSuccess.value
+    val feedsFailedValue   = feedsFailed.value
+    val postsSuccessValue  = postsSuccess.value
+    val postsFilteredValue = postsFiltered.value
 
     // Calculamos el promedio de caracteres sobre los posts filtrados
     val avgChars = if (filteredCount > 0) {
@@ -116,11 +122,20 @@ object Main {
     // feedsSuccess/feedsFailed son para el Ejercicio 4
     // Por ahora solo pongo lo que tenemos
     println(s"============ ESTADISTICAS DE PROCESAMIENTO ============")
-    println(s"Posts descargados: $totalPosts")
+    /*println(s"Posts descargados: $totalPosts")
     println(s"Posts filtrados (vacíos/nulos): $removedCount")
     println(s"Posts válidos: $filteredCount")
     println(s"Largo promedio en posts: $avgChars")
+    println()*/
+    println(s"Feeds descargados con éxito: $feedsSuccessValue")
+    println(s"Feeds fallidos: $feedsFailedValue")
+    println(s"Posts descargados: $postsSuccessValue")
+    println(s"Posts filtrados (vacíos/nulos): $postsFilteredValue")
+    println(s"Largo promedio en posts: $avgChars")
     println()
+
+
+
 
     // Verificamos si no hay mas posts que procesar
     if (filteredCount == 0) {
