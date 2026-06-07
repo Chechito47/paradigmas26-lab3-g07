@@ -238,3 +238,17 @@ Sin embargo, en las etapas posteriores la versión Spark presenta tiempos mayore
 Además, en el Ejercicio 4 todavía no se utiliza `cache()`. Por lo tanto, al ejecutar varias acciones terminales sobre RDDs derivados del mismo linaje, Spark puede recomputar parte del pipeline. Esto afecta tanto los tiempos como los valores de algunos acumuladores. Este comportamiento se analiza y corrige en el Ejercicio 5 mediante persistencia de RDDs.
 
 En conclusión, con un input pequeño no se aprecia una mejora uniforme de rendimiento en Spark. La ventaja del modelo distribuido debería verse con mayor claridad al aumentar la cantidad de feeds o posts, porque las descargas, el parseo y la extracción de entidades pueden repartirse entre workers.
+
+## Ejercicio 5 — Acceso a datos y estadísticas del resultado
+
+### ¿Qué ocurriría si no llamaran a cache()? ¿Cuántas veces se ejecutaría la descarga de feeds?
+
+Si no se llamara a cache() Spark volvería a ejecutar y calcular el RDD desde subscriptionRDD para cada acción que lo necesite, es decir se ejecutaría 4 veces la descarga de feeds ya que hay 4 acciones: postsRDD.count(), filteredPostsRDD.count(), el reduce() usado para calcular avgChars y conteosRDD.collect().
+
+### ¿Por qué es incorrecto llamar a collect() entre los pasos a) y b) del ejercicio 3 y luego continuar el pipeline? ¿Qué consecuencia tiene sobre la distribución del trabajo?
+
+Es incorrecto llamar a collect() entre los pasos a) y b) del ejercicio 3 porque sería ineficiente, ya que collect es una acción que haría que se ejecute todo el pipeline y continúe la ejecución en el driver, por lo tanto al ejecutar map en el b) perderíamos la paralelización de los workers. Además que luego podríamos tener que volver a paralelizar lo que lo haría mas ineficiente.
+
+### cache() es también lazy. ¿En qué momento se almacena realmente el RDD en memoria?
+
+El RDD se guarda en memoria la primera vez que es calculado por una acción, postsRDD y filteredPostsRDD son los datos que guardamos en la cache cuando se ejecutan las acciones postsRDD.count() y filteredPostsRDD.count() respectivamente.
