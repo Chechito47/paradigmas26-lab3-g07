@@ -8,7 +8,6 @@ object Main {
       case None => return // scopt prints error messages
     }
 
-
     // --- PASO 2: Leer suscripciones (driver) ---
     // Left = error fatal, Right = lista de suscripciones validas
     // (no hay que filtrar, ya vienen solo las suscripciones validas sin None)
@@ -32,7 +31,6 @@ object Main {
       println(s"Error: entities directory '${cmdArgs.entitiesDir}' not found")
       return
     }
-
 
     // --- PASO 3: Crear SparkSession (driver) ---
     val spark = SparkSession.builder()
@@ -82,7 +80,6 @@ object Main {
       }
     }.cache()
 
-
     // --- PASO 5: Filtrar posts vacios (worker) ---
     // Notar que no podemos usar mas filterEmptyPosts xq ahora tenemos un RDD
     val filteredPostsRDD = postsRDD.filter { post =>
@@ -97,8 +94,7 @@ object Main {
     isValid
     }.cache()
 
-
-    // --- PASO INTERMEDIO: Calcular estadisticas (worker) ---
+    // --- PASO INTERMEDIO: Calcular estadisticas ---
     // count() es una accion, entonces aca empieza realmente la ejecucion (lo otro era lazy)
 
     val startTotalPosts = System.currentTimeMillis()
@@ -108,9 +104,8 @@ object Main {
 
     val startFilteredPosts = System.currentTimeMillis() 
     val filteredCount = filteredPostsRDD.count()
-    postsRDD.unpersist()
-    val removedCount  = totalPosts - filteredCount
     val endFilteredPosts = System.currentTimeMillis() 
+    postsRDD.unpersist()
     val filteredStageSeconds = (endFilteredPosts - startFilteredPosts) / 1000.0
 
     //valores de los acumuladores
@@ -131,43 +126,30 @@ object Main {
     val avgCharsSeconds = (endAvgChars - startAvgChars) / 1000.0
 
     // Imprimimos las estadísticas de descarga
-    // feedsSuccess/feedsFailed son para el Ejercicio 4
-    // Por ahora solo pongo lo que tenemos
     println(s"============ ESTADISTICAS DE PROCESAMIENTO ============")
-    /*println(s"Posts descargados: $totalPosts")
-    println(s"Posts filtrados (vacíos/nulos): $removedCount")
-    println(s"Posts válidos: $filteredCount")
-    println(s"Largo promedio en posts: $avgChars")
-    println()*/
     println(s"Feeds descargados con éxito: $feedsSuccessValue")
     println(s"Feeds fallidos: $feedsFailedValue")
     println(s"Posts descargados: $postsSuccessValue")
     println(s"Posts filtrados: $postsFilteredValue")
     println(s"Posts validos: $filteredCount")
-    println(s"Largo promedio en posts: $avgChars")
-    println(s"Tiempo postsRDD.count(): $totalPostsSeconds segundos") //descarga + parseo + conteo de posts
-    println(s"Tiempo de filtrado de Posts: $filteredStageSeconds segundos")
-    println(s"Tiempo cálculo avgChars: $avgCharsSeconds segundos")
-    
-    
-    println()
-
-
-
+    println(s"Promedio de caracteres de posts: $avgChars")
+    println(s"Tiempo de descarga de posts: $totalPostsSeconds segundos") //descarga + parseo + conteo de posts
+    println(s"Tiempo de filtrado de posts: $filteredStageSeconds segundos")
+    println(s"Tiempo de cálculo de promedio de caracteres: $avgCharsSeconds segundos")
 
     // Verificamos si no hay mas posts que procesar
     if (filteredCount == 0) {
       println("Error: No valid posts downloaded after filtering")
+      postsRDD.unpersist()
+      filteredPostsRDD.unpersist()
       spark.stop()
       return
     }
-
 
     // --- PASO 6: Cargar diccionario (driver) ---
     // El diccionario se carga una sola vez en el driver
     // Spark lo serializa y envia a cada worker
     val dictionary = Dictionary.loadAll(cmdArgs.entitiesDir)
-
 
     // --- PASO 7: Extraer entidades nombradas (worker) ---
     // Para cada post, detectamos todas las entidades que aparecen en su texto
@@ -183,26 +165,22 @@ object Main {
       }
     }
 
-
     // --- PASO 8: Convertir a par clave valor (worker) ---
     // La clave es (tipo, nombre) para contar por entidad unica
     val paresRDD = entitiesRDD.map { entity =>
       ((entity.entityType, entity.text), 1)
     }
 
-
     // --- PASO 9: Conteo de entidades (worker) ---
     // Resultado: RDD[((String, String), Int)] con el conteo por entidad
     val conteosRDD = paresRDD.reduceByKey(_ + _)
 
-
     // --- PASO 10: Recolectar (driver) ---
     val startCollectEntities = System.currentTimeMillis()
     val resultados = conteosRDD.collect()
-    filteredPostsRDD.unpersist()
     val endCollectEntities = System.currentTimeMillis()
+    filteredPostsRDD.unpersist()
     val collectEntitiesSeconds = (endCollectEntities - startCollectEntities) / 1000.0
-
 
     // --- PASO 11: Formatear e imprimir (driver) ---
     // Ordenamos: primero por conteo descendente, luego por tipo, luego por nombre
@@ -215,7 +193,7 @@ object Main {
     ordenados.foreach { case ((tipo, nombre), conteo) =>
       println(s"[Type=$tipo] $nombre: $conteo apariciones")
     }
-    println(s"Tiempo conteosRDD.collect(): $collectEntitiesSeconds segundos")
+    println(s"Tiempo de cálculo de entidades: $collectEntitiesSeconds segundos")
 
     // Cerramos la SparkSession al terminar
     spark.stop()
