@@ -189,3 +189,52 @@ Se nos pide manejar estos casos de error:
 
 ### ¿qué pasaría si dejaran propagar la excepción?
 Si una excepción escapa del flatMap, el worker que estaba procesando esa particion va a fallar. Pero spark tiene tolerancia a fallos, reintenta la tarea automaticamente (por defecto hasta 4 veces) antes de lanzar una execpcion al driver. O sea que un solo post problematico puede tirar abajo el procesamiento de todos los demas.
+
+## Ejercicio 4 — Monitoreo del éxito de las tareas
+
+### ¿Por qué los Accumulators solo deben usarse para métricas y no para tomar decisiones lógicas dentro de las etapas distribuidas del pipeline?
+
+Los Accumulators deben usarse solamente para métricas porque son una forma de comunicación limitada desde los workers hacia el driver. Los workers pueden incrementar el valor, pero el resultado final solo debe ser leído por el driver después de una acción terminal.
+
+No conviene usarlos para tomar decisiones lógicas dentro del pipeline porque Spark puede ejecutar nuevamente tareas ante fallos, reintentos o recomputaciones. Si una tarea se ejecuta más de una vez, el acumulador puede incrementarse más de una vez para el mismo dato. Por lo tanto, el valor del acumulador puede ser útil para observabilidad, pero no debe determinar el resultado lógico del programa.
+
+### ¿En qué situación un Accumulator puede dar un valor incorrecto?
+
+Un Accumulator puede dar un valor incorrecto si una tarea se ejecuta más de una vez. Esto puede ocurrir por fallos, reintentos o recomputación del RDD. Por ejemplo, si un worker procesa una suscripción e incrementa `feedsSuccess`, pero luego Spark vuelve a ejecutar esa partición, el mismo feed puede contarse dos veces.
+
+También puede ocurrir si se hacen varias acciones terminales sobre un RDD no persistido. Como Spark es lazy, cada acción puede volver a recorrer el linaje del RDD desde el origen. En ese caso, las operaciones con efectos secundarios, como `accumulator.add(1)`, pueden ejecutarse nuevamente.
+
+### ¿En qué momento del pipeline está disponible el valor de un Accumulator para ser leído por el driver?
+
+El valor de un Accumulator está disponible para el driver después de ejecutar una acción terminal, en nuestro caso `count()`, `reduce()` o `collect()`. Recién después de estas acciones los workers ejecutan las transformaciones y actualizan los acumuladores.
+
+Antes de una acción terminal, las transformaciones como `map`, `flatMap` o `filter` solo construyen el plan de ejecución, pero todavía no procesan los datos.
+
+### Spark UI
+
+![Spark UI de la versión paralelizada](data/Images/ConSpark.png)
+
+En la Spark UI se observan los jobs generados por las acciones terminales del pipeline. En esta ejecución aparecen jobs asociados a `count()`, `reduce()` y `collect()`. La UI también permite observar la duración de cada job, la cantidad de stages y la cantidad de tareas ejecutadas. En esta ejecución los jobs finalizaron correctamente.
+
+### Captura de la ejecución secuencial
+
+![Ejecución secuencial sin Spark](data/Images/SinSpark.png)
+
+### Comparación de tiempos entre versión no paralelizada y versión con Spark
+
+La comparación se realizó usando el mismo mock local de Reddit, el mismo archivo `valid_subscriptions.json`, el mismo directorio de entidades y la misma computadora.
+
+| Etapa | Versión secuencial | Versión Spark |
+|---|---:|---:|
+| Descarga + parseo / `postsRDD.count()` | 16.731 s | 5.685 s |
+| Filtrado de posts / `filteredPostsRDD.count()` | 0.003 s | 5.112 s |
+| Cálculo de largo promedio (`avgChars`) | 0.011 s | 5.070 s |
+| Extracción + conteo de entidades / `conteosRDD.collect()` | 0.079 s | 5.486 s |
+
+En la etapa de descarga y parseo, la versión Spark fue más rápida que la versión secuencial, ya que las suscripciones se distribuyen entre workers mediante `sc.parallelize(subscriptions)` y se procesan con `flatMap`. En cambio, en la versión secuencial los feeds se descargan uno por uno.
+
+Sin embargo, en las etapas posteriores la versión Spark presenta tiempos mayores para este input pequeño. Esto puede explicarse por el overhead propio de Spark: creación de jobs, planificación de stages, coordinación de tareas y comunicación entre el driver y los workers. Para pocos feeds y pocos posts, ese costo fijo puede ser más alto que el beneficio de paralelizar.
+
+Además, en el Ejercicio 4 todavía no se utiliza `cache()`. Por lo tanto, al ejecutar varias acciones terminales sobre RDDs derivados del mismo linaje, Spark puede recomputar parte del pipeline. Esto afecta tanto los tiempos como los valores de algunos acumuladores. Este comportamiento se analiza y corrige en el Ejercicio 5 mediante persistencia de RDDs.
+
+En conclusión, con un input pequeño no se aprecia una mejora uniforme de rendimiento en Spark. La ventaja del modelo distribuido debería verse con mayor claridad al aumentar la cantidad de feeds o posts, porque las descargas, el parseo y la extracción de entidades pueden repartirse entre workers.
