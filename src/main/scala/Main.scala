@@ -48,6 +48,11 @@ object Main {
     // El resultado es un RDD[Subscription]: cada worker va a procesar algunas suscripciones
     val subscriptionsRDD = sc.parallelize(subscriptions)
 
+    //acumuladores
+    val feedsSuccess = sc.longAccumulator("feedsSuccess")
+    val feedsFailed = sc.longAccumulator("feedsFailed")
+    val postsSuccess = sc.longAccumulator("postsSuccess")
+    val postsFiltered = sc.longAccumulator("postsFiltered")
 
     // --- PASO 4: Descargar feeds y parsear posts (worker) ---
     // flatMap espera que la función devuelva un Iterable: si hay 0 posts devolvemos List(),
@@ -57,13 +62,22 @@ object Main {
       FileIO.downloadFeed(subscription.url, subscription.name) match {
         // Si la descarga fallo imprimimos warning y devolvemos lista vacia
         case None =>
+          feedsFailed.add(1)
           println(s"Warning: Failed to download from '${subscription.name}' (${subscription.url})")
           List.empty[Post]
+          
         // Si la descarga es exitosa parseamos los posts del JSON
         case Some(content) =>
           val posts = JsonParser.parsePosts(content, subscription.name)
-          if (posts.isEmpty)
-            println(s"Warning: Failed to parse posts from '${subscription.name}' (${subscription.url})")
+          
+          if (posts.isEmpty){
+            feedsFailed.add(1)
+            println(s"Warning: Failed to parse posts from '${subscription.name}' (${subscription.url})")}
+
+          else {
+            feedsSuccess.add(1)
+            postsSuccess.add(posts.length)
+          }
           posts
       }
     }
@@ -72,9 +86,15 @@ object Main {
     // --- PASO 5: Filtrar posts vacios (worker) ---
     // Notar que no podemos usar mas filterEmptyPosts xq ahora tenemos un RDD
     val filteredPostsRDD = postsRDD.filter { post =>
+    val isValid =
       post.title.nonEmpty &&
       post.selftext.nonEmpty &&
       post.selftext.trim.nonEmpty
+
+    if (!isValid){
+      postsFiltered.add(1)
+    }
+    isValid
     }
 
 
