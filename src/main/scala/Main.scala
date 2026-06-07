@@ -80,7 +80,7 @@ object Main {
           }
           posts
       }
-    }
+    }.cache()
 
 
     // --- PASO 5: Filtrar posts vacios (worker) ---
@@ -95,7 +95,7 @@ object Main {
       postsFiltered.add(1)
     }
     isValid
-    }
+    }.cache()
 
 
     // --- PASO INTERMEDIO: Calcular estadisticas (worker) ---
@@ -108,6 +108,7 @@ object Main {
 
     val startFilteredPosts = System.currentTimeMillis() 
     val filteredCount = filteredPostsRDD.count()
+    postsRDD.unpersist()
     val removedCount  = totalPosts - filteredCount
     val endFilteredPosts = System.currentTimeMillis() 
     val filteredStageSeconds = (endFilteredPosts - startFilteredPosts) / 1000.0
@@ -198,6 +199,7 @@ object Main {
     // --- PASO 10: Recolectar (driver) ---
     val startCollectEntities = System.currentTimeMillis()
     val resultados = conteosRDD.collect()
+    filteredPostsRDD.unpersist()
     val endCollectEntities = System.currentTimeMillis()
     val collectEntitiesSeconds = (endCollectEntities - startCollectEntities) / 1000.0
 
