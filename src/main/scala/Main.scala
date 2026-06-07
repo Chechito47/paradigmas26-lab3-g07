@@ -80,7 +80,7 @@ object Main {
           }
           posts
       }
-    }.cache()
+    }
 
 
     // --- PASO 5: Filtrar posts vacios (worker) ---
@@ -95,15 +95,22 @@ object Main {
       postsFiltered.add(1)
     }
     isValid
-    }.cache()
+    }
 
 
     // --- PASO INTERMEDIO: Calcular estadisticas (worker) ---
     // count() es una accion, entonces aca empieza realmente la ejecucion (lo otro era lazy)
-    // Las estadisticas que faltan son parte del ejercicio 4
+
+    val startTotalPosts = System.currentTimeMillis()
     val totalPosts    = postsRDD.count()
+    val endTotalPosts = System.currentTimeMillis()
+    val totalPostsSeconds = (endTotalPosts - startTotalPosts) / 1000.0
+
+    val startFilteredPosts = System.currentTimeMillis() 
     val filteredCount = filteredPostsRDD.count()
     val removedCount  = totalPosts - filteredCount
+    val endFilteredPosts = System.currentTimeMillis() 
+    val filteredStageSeconds = (endFilteredPosts - startFilteredPosts) / 1000.0
 
     //valores de los acumuladores
     val feedsSuccessValue  = feedsSuccess.value
@@ -112,11 +119,15 @@ object Main {
     val postsFilteredValue = postsFiltered.value
 
     // Calculamos el promedio de caracteres sobre los posts filtrados
+    val startAvgChars = System.currentTimeMillis()
     val avgChars = if (filteredCount > 0) {
       filteredPostsRDD
         .map(post => post.title.length + post.selftext.length)  // RDD[Int]
         .reduce(_ + _) / filteredCount                          // suma total / cantidad
     } else 0L
+
+    val endAvgChars = System.currentTimeMillis()
+    val avgCharsSeconds = (endAvgChars - startAvgChars) / 1000.0
 
     // Imprimimos las estadísticas de descarga
     // feedsSuccess/feedsFailed son para el Ejercicio 4
@@ -130,8 +141,14 @@ object Main {
     println(s"Feeds descargados con éxito: $feedsSuccessValue")
     println(s"Feeds fallidos: $feedsFailedValue")
     println(s"Posts descargados: $postsSuccessValue")
-    println(s"Posts filtrados (vacíos/nulos): $postsFilteredValue")
+    println(s"Posts filtrados: $postsFilteredValue")
+    println(s"Posts validos: $filteredCount")
     println(s"Largo promedio en posts: $avgChars")
+    println(s"Tiempo postsRDD.count(): $totalPostsSeconds segundos") //descarga + parseo + conteo de posts
+    println(s"Tiempo de filtrado de Posts: $filteredStageSeconds segundos")
+    println(s"Tiempo cálculo avgChars: $avgCharsSeconds segundos")
+    
+    
     println()
 
 
@@ -179,7 +196,10 @@ object Main {
 
 
     // --- PASO 10: Recolectar (driver) ---
+    val startCollectEntities = System.currentTimeMillis()
     val resultados = conteosRDD.collect()
+    val endCollectEntities = System.currentTimeMillis()
+    val collectEntitiesSeconds = (endCollectEntities - startCollectEntities) / 1000.0
 
 
     // --- PASO 11: Formatear e imprimir (driver) ---
@@ -193,6 +213,7 @@ object Main {
     ordenados.foreach { case ((tipo, nombre), conteo) =>
       println(s"[Type=$tipo] $nombre: $conteo apariciones")
     }
+    println(s"Tiempo conteosRDD.collect(): $collectEntitiesSeconds segundos")
 
     // Cerramos la SparkSession al terminar
     spark.stop()
