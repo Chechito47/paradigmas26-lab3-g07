@@ -13,8 +13,10 @@
 
 ## Índice
 1. [Ejercicio 1](#ejercicio-1--identificar-las-regiones-paralelizables)
-2. [Ejercicio 2](#2-introducción-problema-a-estudiar)
-3. [Ejercicio 3](#3-métodos-modelo-y-parámetros)
+2. [Ejercicio 2](#ejercicio-2--paralelizar-la-descarga-de-feeds)
+3. [Ejercicio 3](#ejercicio-3--paralelizar-el-computo-de-entidades-nombradas)
+2. [Ejercicio 4](#ejercicio-4--monitoreo-del-exito-de-las-tareas)
+3. [Ejercicio 5](#ejercicio-5--acceso-a-datos-y-estadisticas-del-resultado)
 
 ---
 
@@ -158,7 +160,7 @@ En este proyecto: `FileIO.downloadFeed()` dentro del `flatMap` es un efecto secu
 
 ---
 
-# Decisiones de diseño relevantes (opcional no se si hace falta)
+# Preguntas y respuestas
 ## Ejercicio 2 — Paralelizar la descarga de feeds
 ### readSubscriptions
 Se nos pide manejar estos casos de error:
@@ -189,6 +191,22 @@ Se nos pide manejar estos casos de error:
 
 ### ¿qué pasaría si dejaran propagar la excepción?
 Si una excepción escapa del flatMap, el worker que estaba procesando esa particion va a fallar. Pero spark tiene tolerancia a fallos, reintenta la tarea automaticamente (por defecto hasta 4 veces) antes de lanzar una execpcion al driver. O sea que un solo post problematico puede tirar abajo el procesamiento de todos los demas.
+
+## Ejercicio 3 — Paralelizar el cómputo de entidades nombradas
+### ¿Qué ocurre en el cluster en ese punto? ¿Por qué es inevitable para este problema?
+Cuando spark ejecuta reduceByKey ocurre un shuffle: cada worker envia sus pares clave-valor a otros workers segun la clave, provocando que todos los pares con la misma clave queden en el mismo worker. Recien ahi se puede sumar los conteos parciales para obtener el total global.  
+Es un problema inevitable ya que para saber cuantas veces aparece una entidad, como lo podria ser `("ProgrammingLanguage", "Python")` en todos los posts es necesario combinar los resultados de todos los workers, no se puede calcular de manera local completamente.
+
+### ¿Qué restricciones debe cumplir la función que se le pasa a reduceByKey?
+La funcion debe ser conmutativa y asociativa:  
+**Asociativa**: `f(f(a, b), c) == f(a, f(b, c))`. Si no lo fuera, las combinaciones darian resultados distintos.  
+**Conmutativa**: `f(a, b) == f(b, a)`. Si no lo fuera, el resultado dependeria del orden de llegada.
+
+La funcion `_ + _` *(suma entera)* cumple ambas propiedades, por eso es correcta para el conteo.
+
+## ¿Dónde se hace la lectura del diccionario de entidades? ¿En el driver o los workers?
+La lectura se hace en el driver, en el **PASO 6** con `Dictionary.loadAll(cmdArgs.entitiesDir)`. El resultado es una `List[NamedEntity]`. Con el flatMap Spark la serializa y envia una copia a cada worker. Cada uno trabaja con su propia copia local del diccionario.
+
 
 ## Ejercicio 4 — Monitoreo del éxito de las tareas
 

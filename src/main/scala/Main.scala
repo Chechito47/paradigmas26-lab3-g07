@@ -126,16 +126,14 @@ object Main {
     val avgCharsSeconds = (endAvgChars - startAvgChars) / 1000.0
 
     // Imprimimos las estadísticas de descarga
-    println(s"============ ESTADISTICAS DE PROCESAMIENTO ============")
-    println(s"Feeds descargados con éxito: $feedsSuccessValue")
-    println(s"Feeds fallidos: $feedsFailedValue")
-    println(s"Posts descargados: $postsSuccessValue")
-    println(s"Posts filtrados: $postsFilteredValue")
-    println(s"Posts validos: $filteredCount")
-    println(s"Promedio de caracteres de posts: $avgChars")
-    println(s"Tiempo de descarga de posts: $totalPostsSeconds segundos") //descarga + parseo + conteo de posts
-    println(s"Tiempo de filtrado de posts: $filteredStageSeconds segundos")
-    println(s"Tiempo de cálculo de promedio de caracteres: $avgCharsSeconds segundos")
+    println(Formatters.formatProcessingStats(Map(
+      "feedsSuccess"  -> feedsSuccessValue,
+      "feedsFailed"   -> feedsFailedValue,
+      "postsSuccess"  -> postsSuccessValue,
+      "postsFailed"   -> 0L,
+      "postsFiltered" -> postsFilteredValue,
+      "avgChars"      -> avgChars
+    )))
 
     // Verificamos si no hay mas posts que procesar
     if (filteredCount == 0) {
@@ -189,11 +187,14 @@ object Main {
       .take(cmdArgs.topK)
 
     // Imprimimos el ranking de entidades
-    println(s"============ ENTIDADES NOMBRADAS MAS FRECUENTES ============")
-    ordenados.foreach { case ((tipo, nombre), conteo) =>
-      println(s"[Type=$tipo] $nombre: $conteo apariciones")
-    }
-    println(s"Tiempo de cálculo de entidades: $collectEntitiesSeconds segundos")
+    println(Formatters.formatEntityStats(resultados.toMap, cmdArgs.topK))
+    // Estadisticas de tiempo de posts y feeds
+    println(Formatters.formatTimingStats(
+      totalPostsSeconds,
+      filteredStageSeconds,
+      avgCharsSeconds,
+      collectEntitiesSeconds
+    ))
 
     // Cerramos la SparkSession al terminar
     spark.stop()

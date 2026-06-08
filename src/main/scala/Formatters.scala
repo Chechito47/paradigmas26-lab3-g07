@@ -5,13 +5,13 @@ object Formatters {
    * @param stats map with keys: "feedsSuccess", "feedsFailed", "postsSuccess", "postsFailed", "postsFiltered", "avgChars"
    * @return formatted statistics string
    */
-  def formatProcessingStats(stats: Map[String, Int]): String = {
-    val feedsSuccess = stats.getOrElse("feedsSuccess", 0)
-    val feedsFailed = stats.getOrElse("feedsFailed", 0)
-    val postsSuccess = stats.getOrElse("postsSuccess", 0)
-    val postsFailed = stats.getOrElse("postsFailed", 0)
-    val postsFiltered = stats.getOrElse("postsFiltered", 0)
-    val avgChars = stats.getOrElse("avgChars", 0)
+  def formatProcessingStats(stats: Map[String, Long]): String = {
+    val feedsSuccess = stats.getOrElse("feedsSuccess", 0L)
+    val feedsFailed = stats.getOrElse("feedsFailed", 0L)
+    val postsSuccess = stats.getOrElse("postsSuccess", 0L)
+    val postsFailed = stats.getOrElse("postsFailed", 0L)
+    val postsFiltered = stats.getOrElse("postsFiltered", 0L)
+    val avgChars = stats.getOrElse("avgChars", 0L)
 
     s"""============ ESTADÍSTICAS DE PROCESAMIENTO ============
 Feeds descargados exitosamente: $feedsSuccess
@@ -19,7 +19,21 @@ Feeds fallidos: $feedsFailed
 Posts descargados exitosamente: $postsSuccess
 Posts fallidos: $postsFailed
 Posts filtrados (vacíos/nulos): $postsFiltered
+Posts validos: ${postsSuccess - postsFiltered}
 Largo promedio en posts: $avgChars"""
+  }
+
+  def formatTimingStats(
+    totalPostsSeconds: Double,
+    filteredStageSeconds: Double,
+    avgCharsSeconds: Double,
+    collectEntitiesSeconds: Double
+  ): String = {
+    s"""============ ESTADÍSTICAS DE TIEMPOS ============
+  Tiempo de descarga de posts: $totalPostsSeconds segundos
+  Tiempo de filtrado de posts: $filteredStageSeconds segundos
+  Tiempo de cálculo de promedio de caracteres: $avgCharsSeconds segundos
+  Tiempo de cálculo de entidades: $collectEntitiesSeconds segundos"""
   }
 
   /**
