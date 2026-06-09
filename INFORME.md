@@ -1,272 +1,161 @@
-# INFORME — Laboratorio 3: Procesamiento distribuido con Apache Spark
-
-**Materia:** Paradigmas de Programación 2026 — FAMAF  
-**Laboratorio:** Lab 3 — Reddit NER con Apache Spark
-**Grupo:** Nº 7
-**Integrantes**:
-* Aranda, María Jose
-* Pinilla, Lautaro
-* Sabino, Lucas
-* Sosa, Santiago
-
----
-
-## Índice
-1. [Ejercicio 1](#ejercicio-1--identificar-las-regiones-paralelizables)
-2. [Ejercicio 2](#ejercicio-2--paralelizar-la-descarga-de-feeds)
-3. [Ejercicio 3](#ejercicio-3--paralelizar-el-computo-de-entidades-nombradas)
-2. [Ejercicio 4](#ejercicio-4--monitoreo-del-exito-de-las-tareas)
-3. [Ejercicio 5](#ejercicio-5--acceso-a-datos-y-estadisticas-del-resultado)
+# Informe — Laboratorio 3: Procesamiento distribuido con Apache Spark
 
 ---
 
 ## Ejercicio 1 — Identificar las regiones paralelizables
 
 ### a) Diagrama de flujo del pipeline
-Estos son los pasos del pipeline, indicando el tipo de entrada y salida, y si se ejecuta en el **driver** o en los **workers**:
+
+El pipeline se puede representar como una secuencia casi lineal. Cada nodo indica quién ejecuta ese paso (driver o worker) y cada arista indica el tipo Scala del dato que fluye entre pasos.
+
 ```
-1.  [Driver]  Lectura del archivo de suscripciones
-              FileIO.readSubscriptions(filePath)
-              │
-              │  List[Option[Subscription]]
-              ▼
-2.  [Driver]  Filtrado de suscripciones malformadas (eliminar None)
-              subscriptionOpts.flatten
-              │
-              │  List[Subscription]
-              ▼
-3.  [Driver]  Distribucion a los workers
-              sc.parallelize(subscriptions)
-              │
-              │  RDD[Subscription]
-              ▼
-4.  [Workers] flatMap: descargar feed + parsear posts
-              FileIO.downloadFeed(url) + JsonParser.parsePosts(json, name)
-              │
-              │  RDD[Post] (sin filtrar)
-              ▼
-5.  [Workers] filter: descartar posts vacíos
-              Analyzer.filterEmptyPosts equivalente: post.title.nonEmpty && post.selftext.nonEmpty
-              │
-              │  RDD[Post] (posts con titulo y texto no vacos)
-              │
-6.  [Driver]  Carga del diccionario de entidades <-- String(entitiesDir)
-              Dictionary.loadAll(entitiesDir)
-              │
-              │  List[NamedEntity]
-              ▼
-7.  [Workers] flatMap: extraer entidades nombradas
-              Analyzer.detectEntities(text, dictionary)
-              │
-              │  RDD[NamedEntity]
-              ▼
-8.  [Workers] map: convertir a par clave-valor
-              entity => ((entity.entityType, entity.text), 1)
-              │
-              │  RDD[((String, String), Int)]
-              ▼
-9.  [Workers] reduceByKey: conteo     <-- BARRERA DE SINCRONIZACIÓN
-              Analyzer.countEntities(allEntities) && Analyzer.countByType(allEntities)
-              │
-              │  RDD[((String, String), Int)]
-              ▼
-10.  [Driver] Recolección al driver
-              collect() + sortBy(-count, type, name) + take(topK)
-              │
-              │  Array[((String, String), Int)]
-              ▼
-11.  [Driver] Formatear e imprimir
-              Formatters.formatEntityStats(entityCounts, topK)
+[Driver] Leer suscripciones
+         FileIO.readSubscriptions(filePath)
+         │
+         │  List[Subscription]
+         ▼
+[Driver] sc.parallelize(subscriptions)
+         │
+         │  RDD[Subscription]
+         ▼
+[Worker] flatMap: descargar feed + parsear posts
+         downloadFeed(url) → parsePosts(content)
+         Cada worker recibe un subconjunto de suscripciones,
+         descarga su feed y emite 0..N posts por suscripción.
+         ← .cache() aplicado aquí →
+         │
+         │  RDD[Post]
+         ▼
+[Worker] filter: descartar posts vacíos
+         title y selftext no vacíos ni blancos
+         ← .cache() aplicado aquí →
+         │
+         │  RDD[Post]
+         ▼
+[Acción/Barrera] count() sobre postsRDD y filteredPostsRDD
+         + lectura de acumuladores (feedsSuccess, feedsFailed,
+           postsSuccess, postsFiltered)
+         │
+         │  Long (escalares al driver)
+         ▼
+[Worker] map + reduce: calcular promedio de caracteres
+         post → (title.length + selftext.length), luego reduce(_ + _)
+         │
+         │  Long (escalar al driver)
+         ▼
+[Driver] Cargar diccionario
+         Dictionary.loadAll(entitiesDir)
+         El resultado es serializado por Spark y enviado a cada worker.
+         │
+         │  List[NamedEntity]  (broadcast implícito en el cierre del flatMap)
+         ▼
+[Worker] flatMap: extraer entidades nombradas
+         Analyzer.detectEntities(text, dictionary)
+         Cada post puede generar 0..N entidades.
+         │
+         │  RDD[NamedEntity]
+         ▼
+[Worker] map: entidad → par clave-valor
+         entity → ((entity.entityType, entity.text), 1)
+         │
+         │  RDD[((String, String), Int)]
+         ▼
+[Worker + Barrera] reduceByKey(_ + _)
+         Agrega conteos por clave (tipo, nombre).
+         Barrera de sincronización: ningún worker puede producir
+         el resultado parcial hasta que todos hayan emitido sus pares.
+         │
+         │  RDD[((String, String), Int)]
+         ▼
+[Driver] collect()
+         Trae todos los resultados al driver.
+         │
+         │  Array[((String, String), Int)]
+         ▼
+[Driver] sortBy + take(topK) + Formatters.formatEntityStats
+         Ordena, recorta al top-K e imprime.
 ```
 
-Para tener en cuenta: `Dictionary.loadAll(entitiesDir)` devuelve un `List[NamedEntity]` y se ejecuta en el **driver** antes de que comience el pipeline distribuido. Ese valor se serializa y se envía a cada worker cuando se ejecuta el `flatMap` de extracción de entidades.
+---
+
+### b) Correspondencia con abstracciones de Spark
+
+Analisis de cada paso del pipeline y que abstraccion de Spark le corresponde
+
+**`flatMap` — descarga y parseo de feeds**
+
+Cada suscripción es independiente, no necesita información de ninguna otra para descargar su feed. La cantidad de posts que genera es variable (0 si la descarga falla, N si tiene éxito), por lo que el uso de `flatMap` encaja. No se podría usar `map` porque exige exactamente una salida por entrada, y una suscripción puede producir cero posts (error de red, feed vacío) o muchos.
+
+**`filter` — descartar posts vacíos**
+
+Cada post se evalúa de forma independiente contra un predicado. `filter` es un caso especial de `flatMap` donde la salida es 0 o 1 elementos (el mismo elemento si pasa, nada si no). En el código se usa `filter` directamente, que es más expresivo.
+
+**`map` — calcular longitud de caracteres por post**
+
+Transforma cada `Post` en un `Int` (longitud de título + selftext). Exactamente una salida por entrada, sin dependencia entre posts. Es el caso canónico de `map`.
+
+**`reduce` — sumar longitudes para calcular el promedio**
+
+Combina todos los `Int` del RDD en un único escalar usando el operador suma. No es `reduceByKey` porque no hay agrupamiento por clave. Es una reducción total sobre todo el RDD. Es una acción terminal (trae el resultado al driver), no una transformación.
+
+**`flatMap` — extracción de entidades nombradas**
+
+Cada post puede producir cero o más `NamedEntity` dependiendo de cuántas entidades del diccionario aparezcan en su texto. Nuevamente, la variabilidad en la cantidad de salidas hace que `flatMap` sea la abstracción correcta.
+
+**`map` — entidad a par clave-valor**
+
+Convierte cada `NamedEntity` en `((entityType, text), 1)`. Exactamente una salida por entrada
+
+**`reduceByKey` — contar ocurrencias por entidad**
+
+Agrupa todos los pares por clave `(tipo, nombre)` y suma los valores. El resultado de una clave depende de todos los elementos con esa clave distribuidos entre todos los workers, por lo que es imposible computarlo sin una barrera de sincronización. Es el caso canónico de `reduceByKey`.
+
+**Pasos que no encajan en ninguna de las tres abstracciones**
+
+Hay dos pasos que no son transformaciones de Spark:
+
+1. **Leer suscripciones del archivo JSON** (`FileIO.readSubscriptions`): es una operación de I/O local que corre íntegramente en el driver. Su salida es una `List[Subscription]` que luego se paraleliza con `sc.parallelize`. No tiene sentido distribuirla porque el archivo es local y la lista es pequeña.
+
+2. **Cargar el diccionario de entidades** (`Dictionary.loadAll`): ídem, es I/O local en el driver. El resultado es una `List[NamedEntity]` que Spark serializa automáticamente y envía a cada worker como parte del cierre del `flatMap` de extracción de entidades.
+
+3. **`collect` + ordenar + imprimir**: `collect` es una acción que trae datos de los workers al driver. El ordenamiento y la impresión posteriores son operaciones locales sobre un `Array`, fuera del modelo RDD. No hay una abstracción de Spark que corresponda a "traer todo al driver y procesarlo localmente", más allá de la propia acción `collect`.
 
 ---
 
-### b) Clasificación de cada paso según la abstracción de Spark
+### c) Barreras de sincronización
 
-| Paso | ¿Transformación sobre RDD? | Abstracción Spark | Justificación |
-|------|----------------------------|-------------------|----------------|
-| 1 | Operación local | **Ninguna** | Operación local sobre un archivo. El resultado se pasa luego a `sc.parallelize` |
-| 2 | Operación local | **Ninguna** | `flatten` local |
-| 3 | Creación del RDD | **Ninguna** | `parallelize` no es transformación, sino el punto de entrada al grafo distribuido. Distribuye los elementos del `List[Subscription]` entre los workers |
-| 4 | Sí (0..N posts) | `flatMap` | Cada `Subscription` produce cero o más `Post` (puede fallar la descarga → 0 posts, o devolver N posts) |
-| 5 | Sí (0 o 1 post) | **Ninguna** | Es `filter`, no está en la lista (aunque es un caso especial de `flatMap`) |
-| 6 | Operación local | **Ninguna** | Carga de diccionario en driver |
-| 7 | Sí (0..N entidades) | `flatMap` | Cada `Post` produce cero o más `NamedEntity` |
-| 8 | Sí (1 a 1) | `map` | Cada `NamedEntity` produce exactamente un par `((String, String), Int)`. Relación 1-a-1, sin dependencia entre elementos |
-| 9 | Sí (agrupa y suma) | `reduceByKey` | Conteo global por clave, depende de todos los posts de todos los workers |
-| 10 | No es transformación (acción) | **Ninguna** | `collect` es una acción, no transformación |
-| 11 | Operación local | **Ninguna** | Ordenamiento e impresión en driver |
+Una barrera es un punto donde todos los workers deben haber terminado su trabajo parcial antes de que el pipeline pueda continuar.
 
-**¿Hay algún paso que no encaje en ninguna de estas abstracciones?**  
-Si, los pasos 1, 2, 3, 5, 6, 10 y 11:
-* Los pasos 1, 2, 3 y 6 por ser operaciones locales del driver
-* El paso 5 porque es `filter` (Spark lo tiene, pero no es `map`/`flatMap`/`reduceByKey`)
-* El paso 10 porque es una acción
-* El paso 11 porque es ordenamiento local
+**Pasos que son barreras:**
 
----
+- **`count()` sobre `postsRDD` y `filteredPostsRDD`**: son acciones terminales. Spark no puede devolver el conteo total hasta que todos los workers hayan procesado sus particiones. Hasta este punto la ejecución es completamente lazy; las barreras son lo que fuerza la ejecución real.
 
-### c) Barreras de sincronización vs. pasos independientes
+- **`reduce(_ + _)` para el promedio de caracteres**: reduce global que espera a todos los workers.
 
-**Pasos que son barreras de sincronización:**
+- **`reduceByKey(_ + _)`**: barrera de shuffle. Spark redistribuye todos los pares entre workers según la clave antes de reducir, lo que requiere que todos los workers hayan emitido sus pares.
 
-- **`reduceByKey`**: es la única barrera del pipeline. Para calcular el conteo total de, por ejemplo, la entidad `("ProgrammingLanguage", "Scala")`, Spark necesita combinar los conteos parciales de *todos* los workers. Ningún worker puede producir el resultado final hasta que todos hayan terminado de procesar sus particiones y hayan enviado sus resultados parciales al shuffle. El resultado del `reduceByKey` no está disponible hasta que la etapa completa termina.
+- **`collect()`**: trae todos los datos de los workers al driver. El driver no puede continuar hasta que todos hayan terminado.
 
-- **`collect()` / `take()`**: técnicamente no son barreras de transformación, pero sí son **acciones terminales** que fuerzan la ejecución completa del grafo (DAG) hasta ese punto. Todo el pipeline lazy se materializa en este momento.
+**Pasos que se ejecutan de forma completamente independiente entre workers:**
 
-**Pasos que pueden ejecutarse de forma completamente independiente entre workers:**
+- El `flatMap` de descarga y parseo: cada worker descarga sus feeds sin coordinarse con los demás.
+- El `filter` de posts vacíos: cada worker evalúa sus posts localmente.
+- El `map` de longitud de caracteres: local por partición.
+- El `flatMap` de extracción de entidades: cada worker procesa sus posts de forma independiente.
+- El `map` de pares clave-valor: local por elemento.
 
-- `flatMap` de descarga de feeds: cada worker descarga su propio subconjunto de URLs sin coordinarse con otros. Un worker que descarga `r/scala` no necesita esperar al que descarga `r/programming`.
-
-- `filter` de posts vacíos: la decisión de descartar un post depende únicamente de ese post, no de los demás.
-
-- `flatMap` de extracción de entidades: cada worker procesa sus posts de forma local. La detección de `"Scala"` en un post no depende de ningún otro post.
-
-- `map` de clasificación: transformación 1-a-1, completamente independiente entre elementos.
+La fase de `reduceByKey` tiene una parte de "map-side combine" que también puede ocurrir localmente en cada worker (reducción parcial antes del shuffle), pero el resultado final sí requiere sincronización.
 
 ---
 
-### d) Restricciones que impone Spark sobre las funciones del desarrollador
+### d) Restricciones sobre las funciones pasadas a las transformaciones de Spark
 
-Las funciones que se pasan a las transformaciones de Spark (`map`, `flatMap`, `reduceByKey`, etc.) deben cumplir tres restricciones fundamentales para funcionar correctamente en un entorno distribuido:
+Para que una función pueda ejecutarse en un entorno distribuido, Spark impone las siguientes restricciones:
 
-**1. Serializable**
+**Serialización**: la función se serializa (junto con todo lo que captura en su cierre) y se envía por red a cada worker. Todo objeto capturado por la función debe ser serializable con Java Serialization. En el proyecto esto explica por qué `NamedEntity` extiende `Serializable`: el diccionario completo de entidades es capturado por el cierre del `flatMap` de extracción, y Spark necesita enviarlo a cada worker. Si un objeto no es serializable, Spark lanza una excepción en tiempo de ejecución al intentar enviar la tarea.
 
-La función (closure) se serializa con Java serialization y se envía por red a cada worker. Cualquier objeto capturado en el closure debe ser `Serializable`. Si la función captura una referencia a un objeto no serializable (por ejemplo, una conexión a base de datos, un `SparkContext`, o una instancia de una clase que no implementa `Serializable`), Spark lanzará una `NotSerializableException` en tiempo de ejecución.
+**Estado compartido mutable**: las funciones no deben leer ni escribir estado mutable compartido (variables globales, singletons con estado). En un entorno distribuido, cada worker tiene su propia copia del proceso JVM; no existe memoria compartida entre workers. Si una función modifica un objeto "compartido", cada worker modifica su copia local y los cambios nunca se propagan. La única forma correcta de comunicar información de workers al driver es mediante `Accumulator`s, que Spark maneja de forma segura.
 
-En este proyecto: el `Dictionary` cargado en el driver se captura en el closure del `flatMap` de extracción de entidades. La `List[NamedEntity]` es serializable (son case classes / clases simples), por lo que no hay problema. Sin embargo, si se capturara el objeto `Dictionary` como un singleton con estado, podría ser problemático.
+**Efectos secundarios**: en principio, las funciones deberían ser puras (sin efectos secundarios) porque Spark puede re-ejecutar tareas que fallen, lo que haría que los efectos secundarios se repitan. En el proyecto hay efectos secundarios intencionales: los `println` de warnings y los incrementos de acumuladores. Los `println` dentro del `flatMap` son aceptables en modo local (los logs aparecen en la misma consola), pero en un cluster real los mensajes se pierden en los logs de los workers y no se ven en el driver. En cuanto a los acumuladores, Spark garantiza que se incrementan exactamente una vez por tarea si la tarea tiene éxito, pero puede haber doble conteo si Spark re-ejecuta una tarea fallida antes de que la primera intente completarse.
 
-**2. Sin estado compartido mutable**
-
-Spark ejecuta las funciones en múltiples JVMs distintas (los workers). No existe memoria compartida entre ellas. Cualquier variable mutable definida fuera del closure y usada dentro de él **no se comparte**: cada worker tiene su propia copia serializada. Intentar usar una variable compartida (como un contador `var total = 0` modificado dentro de un `map`) producirá resultados incorrectos silenciosamente, porque las modificaciones ocurren en copias locales que nunca se propagan al driver.
-
-La solución correcta para contadores es usar **Accumulators** (Ejercicio 4), que son el único mecanismo seguro de comunicación worker → driver.
-
-**3. Sin efectos secundarios observables (idealmente)**
-
-Las funciones deben ser lo más puras posible. Spark puede re-ejecutar tareas en caso de fallo (tolerancia a fallos), lo que significa que una función puede ejecutarse más de una vez sobre los mismos datos. Si la función tiene efectos secundarios como escribir a disco, enviar requests HTTP o modificar una base de datos, esas operaciones se repetirían, causando duplicados o inconsistencias.
-
-En este proyecto: `FileIO.downloadFeed()` dentro del `flatMap` es un efecto secundario (request HTTP). Esto es aceptable y esperado para este caso de uso, pero hay que ser consciente de que ante un fallo y re-ejecución, el feed se descargaría dos veces.
-
-**Resumen:**
-
-| Restricción | Consecuencia si se viola |
-|-------------|--------------------------|
-| No serializable | `NotSerializableException` en runtime |
-| Estado compartido mutable | Resultados incorrectos silenciosos |
-| Efectos secundarios | Operaciones duplicadas ante re-ejecución |
-
----
-
-# Preguntas y respuestas
-## Ejercicio 2 — Paralelizar la descarga de feeds
-### readSubscriptions
-Se nos pide manejar estos casos de error:
-* Si el archivo no existe -> `Error: Could not load $filePath - file not found`
-* Si el JSON es invalido -> `Error: Could not load $filePath - invalid JSON format`
-* Si una suscripcion le falta name o url -> `Warning: Skipping malformed subscription (missing 'name' or 'url' field)`
-
-*Los dos primeros son errores fatales => el programa termina*  
-*La ultima es warning => se interrumpe la ejecucion sin terminar*
-
-### downloadFeed
-* Tenemos que agregar el argumento `subscriptionName: String` para poder hacer un warning relacionado a esta funcion
-
-### main
-* Si no hay suscripciones válidas -> `Error: No valid subscriptions found`
-* Si no se puede hacer fetch de una url -> `"Warning: Failed to download from '${subscription.name}' (${subscription.url})" (aca es donde sucede)`
-* No llamamos a filterEmptyPosts ya que ahora tenemos un RDD y no se puede (deberiamos cambiar la implementacion para eso)
-* Tenemos solo 3 estadisticas: **totalPosts, filteredCount, removedCount**. Las que faltan son parte del ejercicio 4
-* Se adapto el formateo
-
-### CommandLineArgs
-* Indicamos que lea el archivo del mock `local_subcriptions.json`
-
-### NamedEntity
-* Hicimos que la clase `NamedEntity` extienda a `Serializable`, para que funcione con Spark
-
-**Nota**: Los errores que aparecen al ejecutar son normales de spark
-
-### ¿qué pasaría si dejaran propagar la excepción?
-Si una excepción escapa del flatMap, el worker que estaba procesando esa particion va a fallar. Pero spark tiene tolerancia a fallos, reintenta la tarea automaticamente (por defecto hasta 4 veces) antes de lanzar una execpcion al driver. O sea que un solo post problematico puede tirar abajo el procesamiento de todos los demas.
-
-## Ejercicio 3 — Paralelizar el cómputo de entidades nombradas
-### ¿Qué ocurre en el cluster en ese punto? ¿Por qué es inevitable para este problema?
-Cuando spark ejecuta reduceByKey ocurre un shuffle: cada worker envia sus pares clave-valor a otros workers segun la clave, provocando que todos los pares con la misma clave queden en el mismo worker. Recien ahi se puede sumar los conteos parciales para obtener el total global.  
-Es un problema inevitable ya que para saber cuantas veces aparece una entidad, como lo podria ser `("ProgrammingLanguage", "Python")` en todos los posts es necesario combinar los resultados de todos los workers, no se puede calcular de manera local completamente.
-
-### ¿Qué restricciones debe cumplir la función que se le pasa a reduceByKey?
-La funcion debe ser conmutativa y asociativa:  
-**Asociativa**: `f(f(a, b), c) == f(a, f(b, c))`. Si no lo fuera, las combinaciones darian resultados distintos.  
-**Conmutativa**: `f(a, b) == f(b, a)`. Si no lo fuera, el resultado dependeria del orden de llegada.
-
-La funcion `_ + _` *(suma entera)* cumple ambas propiedades, por eso es correcta para el conteo.
-
-## ¿Dónde se hace la lectura del diccionario de entidades? ¿En el driver o los workers?
-La lectura se hace en el driver, en el **PASO 6** con `Dictionary.loadAll(cmdArgs.entitiesDir)`. El resultado es una `List[NamedEntity]`. Con el flatMap Spark la serializa y envia una copia a cada worker. Cada uno trabaja con su propia copia local del diccionario.
-
-
-## Ejercicio 4 — Monitoreo del éxito de las tareas
-
-### ¿Por qué los Accumulators solo deben usarse para métricas y no para tomar decisiones lógicas dentro de las etapas distribuidas del pipeline?
-
-Los Accumulators deben usarse solamente para métricas porque son una forma de comunicación limitada desde los workers hacia el driver. Los workers pueden incrementar el valor, pero el resultado final solo debe ser leído por el driver después de una acción terminal.
-
-No conviene usarlos para tomar decisiones lógicas dentro del pipeline porque Spark puede ejecutar nuevamente tareas ante fallos, reintentos o recomputaciones. Si una tarea se ejecuta más de una vez, el acumulador puede incrementarse más de una vez para el mismo dato. Por lo tanto, el valor del acumulador puede ser útil para observabilidad, pero no debe determinar el resultado lógico del programa.
-
-### ¿En qué situación un Accumulator puede dar un valor incorrecto?
-
-Un Accumulator puede dar un valor incorrecto si una tarea se ejecuta más de una vez. Esto puede ocurrir por fallos, reintentos o recomputación del RDD. Por ejemplo, si un worker procesa una suscripción e incrementa `feedsSuccess`, pero luego Spark vuelve a ejecutar esa partición, el mismo feed puede contarse dos veces.
-
-También puede ocurrir si se hacen varias acciones terminales sobre un RDD no persistido. Como Spark es lazy, cada acción puede volver a recorrer el linaje del RDD desde el origen. En ese caso, las operaciones con efectos secundarios, como `accumulator.add(1)`, pueden ejecutarse nuevamente.
-
-### ¿En qué momento del pipeline está disponible el valor de un Accumulator para ser leído por el driver?
-
-El valor de un Accumulator está disponible para el driver después de ejecutar una acción terminal, en nuestro caso `count()`, `reduce()` o `collect()`. Recién después de estas acciones los workers ejecutan las transformaciones y actualizan los acumuladores.
-
-Antes de una acción terminal, las transformaciones como `map`, `flatMap` o `filter` solo construyen el plan de ejecución, pero todavía no procesan los datos.
-
-### Spark UI
-
-![Spark UI de la versión paralelizada](data/Images/ConSpark.png)
-
-En la Spark UI se observan los jobs generados por las acciones terminales del pipeline. En esta ejecución aparecen jobs asociados a `count()`, `reduce()` y `collect()`. La UI también permite observar la duración de cada job, la cantidad de stages y la cantidad de tareas ejecutadas. En esta ejecución los jobs finalizaron correctamente.
-
-### Captura de la ejecución secuencial
-
-![Ejecución secuencial sin Spark](data/Images/SinSpark.png)
-
-### Comparación de tiempos entre versión no paralelizada y versión con Spark
-
-La comparación se realizó usando el mismo mock local de Reddit, el mismo archivo `valid_subscriptions.json`, el mismo directorio de entidades y la misma computadora.
-
-| Etapa | Versión secuencial | Versión Spark |
-|---|---:|---:|
-| Descarga + parseo / `postsRDD.count()` | 16.731 s | 5.685 s |
-| Filtrado de posts / `filteredPostsRDD.count()` | 0.003 s | 5.112 s |
-| Cálculo de largo promedio (`avgChars`) | 0.011 s | 5.070 s |
-| Extracción + conteo de entidades / `conteosRDD.collect()` | 0.079 s | 5.486 s |
-
-En la etapa de descarga y parseo, la versión Spark fue más rápida que la versión secuencial, ya que las suscripciones se distribuyen entre workers mediante `sc.parallelize(subscriptions)` y se procesan con `flatMap`. En cambio, en la versión secuencial los feeds se descargan uno por uno.
-
-Sin embargo, en las etapas posteriores la versión Spark presenta tiempos mayores para este input pequeño. Esto puede explicarse por el overhead propio de Spark: creación de jobs, planificación de stages, coordinación de tareas y comunicación entre el driver y los workers. Para pocos feeds y pocos posts, ese costo fijo puede ser más alto que el beneficio de paralelizar.
-
-Además, en el Ejercicio 4 todavía no se utiliza `cache()`. Por lo tanto, al ejecutar varias acciones terminales sobre RDDs derivados del mismo linaje, Spark puede recomputar parte del pipeline. Esto afecta tanto los tiempos como los valores de algunos acumuladores. Este comportamiento se analiza y corrige en el Ejercicio 5 mediante persistencia de RDDs.
-
-En conclusión, con un input pequeño no se aprecia una mejora uniforme de rendimiento en Spark. La ventaja del modelo distribuido debería verse con mayor claridad al aumentar la cantidad de feeds o posts, porque las descargas, el parseo y la extracción de entidades pueden repartirse entre workers.
-
-## Ejercicio 5 — Acceso a datos y estadísticas del resultado
-
-### ¿Qué ocurriría si no llamaran a cache()? ¿Cuántas veces se ejecutaría la descarga de feeds?
-
-Si no se llamara a cache() Spark volvería a ejecutar y calcular el RDD desde subscriptionRDD para cada acción que lo necesite, es decir se ejecutaría 4 veces la descarga de feeds ya que hay 4 acciones: postsRDD.count(), filteredPostsRDD.count(), el reduce() usado para calcular avgChars y conteosRDD.collect().
-
-### ¿Por qué es incorrecto llamar a collect() entre los pasos a) y b) del ejercicio 3 y luego continuar el pipeline? ¿Qué consecuencia tiene sobre la distribución del trabajo?
-
-Es incorrecto llamar a collect() entre los pasos a) y b) del ejercicio 3 porque sería ineficiente, ya que collect es una acción que haría que se ejecute todo el pipeline y continúe la ejecución en el driver, por lo tanto al ejecutar map en el b) perderíamos la paralelización de los workers. Además que luego podríamos tener que volver a paralelizar lo que lo haría mas ineficiente.
-
-### cache() es también lazy. ¿En qué momento se almacena realmente el RDD en memoria?
-
-El RDD se guarda en memoria la primera vez que es calculado por una acción, postsRDD y filteredPostsRDD son los datos que guardamos en la cache cuando se ejecutan las acciones postsRDD.count() y filteredPostsRDD.count() respectivamente.
+**Conmutatividad y asociatividad para reducciones**: la función pasada a `reduceByKey` debe ser conmutativa (`f(a,b) == f(b,a)`) y asociativa (`f(f(a,b),c) == f(a,f(b,c))`). Spark puede combinar los valores en cualquier orden y en cualquier worker, así que si la función no cumple estas propiedades el resultado será no determinista. La suma `_ + _` cumple ambas.
