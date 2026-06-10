@@ -14,9 +14,9 @@
 ## Índice
 1. [Ejercicio 1](#ejercicio-1--identificar-las-regiones-paralelizables)
 2. [Ejercicio 2](#ejercicio-2--paralelizar-la-descarga-de-feeds)
-3. [Ejercicio 3](#ejercicio-3--paralelizar-el-computo-de-entidades-nombradas)
-2. [Ejercicio 4](#ejercicio-4--monitoreo-del-exito-de-las-tareas)
-3. [Ejercicio 5](#ejercicio-5--acceso-a-datos-y-estadisticas-del-resultado)
+3. [Ejercicio 3](#ejercicio-3--paralelizar-el-cómputo-de-entidades-nombradas)
+2. [Ejercicio 4](#ejercicio-4--monitoreo-del-éxito-de-las-tareas)
+3. [Ejercicio 5](#ejercicio-5--acceso-a-datos-y-estadísticas-del-resultado)
 
 ---
 
