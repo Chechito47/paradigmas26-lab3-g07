@@ -25,58 +25,71 @@
 ### a) Diagrama de flujo del pipeline
 Estos son los pasos del pipeline, indicando el tipo de entrada y salida, y si se ejecuta en el **driver** o en los **workers**:
 ```
-1.  [Driver]  Lectura del archivo de suscripciones
-              FileIO.readSubscriptions(filePath)
-              │
-              │  List[Option[Subscription]]
-              ▼
-2.  [Driver]  Filtrado de suscripciones malformadas (eliminar None)
-              subscriptionOpts.flatten
-              │
-              │  List[Subscription]
-              ▼
-3.  [Driver]  Distribucion a los workers
-              sc.parallelize(subscriptions)
-              │
-              │  RDD[Subscription]
-              ▼
-4.  [Workers] flatMap: descargar feed + parsear posts
-              FileIO.downloadFeed(url) + JsonParser.parsePosts(json, name)
-              │
-              │  RDD[Post] (sin filtrar)
-              ▼
-5.  [Workers] filter: descartar posts vacíos
-              Analyzer.filterEmptyPosts equivalente: post.title.nonEmpty && post.selftext.nonEmpty
-              │
-              │  RDD[Post] (posts con titulo y texto no vacos)
-              │
-6.  [Driver]  Carga del diccionario de entidades <-- String(entitiesDir)
-              Dictionary.loadAll(entitiesDir)
-              │
-              │  List[NamedEntity]
-              ▼
-7.  [Workers] flatMap: extraer entidades nombradas
-              Analyzer.detectEntities(text, dictionary)
-              │
-              │  RDD[NamedEntity]
-              ▼
-8.  [Workers] map: convertir a par clave-valor
-              entity => ((entity.entityType, entity.text), 1)
-              │
-              │  RDD[((String, String), Int)]
-              ▼
-9.  [Workers] reduceByKey: conteo     <-- BARRERA DE SINCRONIZACIÓN
-              Analyzer.countEntities(allEntities) && Analyzer.countByType(allEntities)
-              │
-              │  RDD[((String, String), Int)]
-              ▼
-10.  [Driver] Recolección al driver
-              collect() + sortBy(-count, type, name) + take(topK)
-              │
-              │  Array[((String, String), Int)]
-              ▼
-11.  [Driver] Formatear e imprimir
-              Formatters.formatEntityStats(entityCounts, topK)
+[Driver] Leer suscripciones
+         FileIO.readSubscriptions(filePath)
+         │
+         │  List[Subscription]
+         ▼
+[Driver] sc.parallelize(subscriptions)
+         │
+         │  RDD[Subscription]
+         ▼
+[Worker] flatMap: descargar feed + parsear posts
+         downloadFeed(url) → parsePosts(content)
+         Cada worker recibe un subconjunto de suscripciones,
+         descarga su feed y emite 0..N posts por suscripción.
+         ← .cache() aplicado aquí →
+         │
+         │  RDD[Post]
+         ▼
+[Worker] filter: descartar posts vacíos
+         title y selftext no vacíos ni blancos
+         ← .cache() aplicado aquí →
+         │
+         │  RDD[Post]
+         ▼
+[Acción/Barrera] count() sobre postsRDD y filteredPostsRDD
+         + lectura de acumuladores (feedsSuccess, feedsFailed,
+           postsSuccess, postsFiltered)
+         │
+         │  Long (escalares al driver)
+         ▼
+[Worker] map + reduce: calcular promedio de caracteres
+         post → (title.length + selftext.length), luego reduce(_ + _)
+         │
+         │  Long (escalar al driver)
+         ▼
+[Driver] Cargar diccionario
+         Dictionary.loadAll(entitiesDir)
+         El resultado es serializado por Spark y enviado a cada worker.
+         │
+         │  List[NamedEntity]  (broadcast implícito en el cierre del flatMap)
+         ▼
+[Worker] flatMap: extraer entidades nombradas
+         Analyzer.detectEntities(text, dictionary)
+         Cada post puede generar 0..N entidades.
+         │
+         │  RDD[NamedEntity]
+         ▼
+[Worker] map: entidad → par clave-valor
+         entity → ((entity.entityType, entity.text), 1)
+         │
+         │  RDD[((String, String), Int)]
+         ▼
+[Worker + Barrera] reduceByKey(_ + _)
+         Agrega conteos por clave (tipo, nombre).
+         Barrera de sincronización: ningún worker puede producir
+         el resultado parcial hasta que todos hayan emitido sus pares.
+         │
+         │  RDD[((String, String), Int)]
+         ▼
+[Driver] collect()
+         Trae todos los resultados al driver.
+         │
+         │  Array[((String, String), Int)]
+         ▼
+[Driver] sortBy + take(topK) + Formatters.formatEntityStats
+         Ordena, recorta al top-K e imprime.
 ```
 
 Para tener en cuenta: `Dictionary.loadAll(entitiesDir)` devuelve un `List[NamedEntity]` y se ejecuta en el **driver** antes de que comience el pipeline distribuido. Ese valor se serializa y se envía a cada worker cuando se ejecuta el `flatMap` de extracción de entidades.
@@ -190,7 +203,7 @@ Se nos pide manejar estos casos de error:
 **Nota**: Los errores que aparecen al ejecutar son normales de spark
 
 ### ¿qué pasaría si dejaran propagar la excepción?
-Si una excepción escapa del flatMap, el worker que estaba procesando esa particion va a fallar. Pero spark tiene tolerancia a fallos, reintenta la tarea automaticamente (por defecto hasta 4 veces) antes de lanzar una execpcion al driver. O sea que un solo post problematico puede tirar abajo el procesamiento de todos los demas.
+Si la excepción escapara del `flatMap`, el worker que estaba procesando esa partición fallaría. Spark tiene tolerancia a fallos e intentaría re-ejecutar esa tarea automáticamente (hasta 4 veces por defecto). Si todos los reintentos fallan, Spark cancela el job completo y el driver recibe una excepción, abortando el procesamiento de todas las suscripciones restantes, incluso las que habrían tenido éxito. Al capturar la excepción dentro del `flatMap` y devolver `List.empty[Post]`, en cambio, el fallo queda aislado a esa suscripción y el pipeline continúa con las demás.
 
 ## Ejercicio 3 — Paralelizar el cómputo de entidades nombradas
 ### ¿Qué ocurre en el cluster en ese punto? ¿Por qué es inevitable para este problema?
@@ -205,7 +218,8 @@ La funcion debe ser conmutativa y asociativa:
 La funcion `_ + _` *(suma entera)* cumple ambas propiedades, por eso es correcta para el conteo.
 
 ## ¿Dónde se hace la lectura del diccionario de entidades? ¿En el driver o los workers?
-La lectura se hace en el driver, en el **PASO 6** con `Dictionary.loadAll(cmdArgs.entitiesDir)`. El resultado es una `List[NamedEntity]`. Con el flatMap Spark la serializa y envia una copia a cada worker. Cada uno trabaja con su propia copia local del diccionario.
+
+La lectura se hace en el **driver**, con `Dictionary.loadAll(cmdArgs.entitiesDir)` antes de que comience el pipeline distribuido de NER. El resultado, una `List[NamedEntity]`, queda capturado en el closure de la función que se le pasa al `flatMap`. Cuando Spark serializa esa función para enviarla a cada worker, serializa también todos los objetos que captura, incluyendo el diccionario completo. Cada worker recibe entonces su propia copia local del diccionario. Esto funciona correctamente para un diccionario pequeño, pero si el diccionario fuera muy grande, sería más eficiente usar una `Broadcast Variable` explícita `(sc.broadcast(dictionary))`, que Spark envía una sola vez por nodo en lugar de una vez por tarea.
 
 
 ## Ejercicio 4 — Monitoreo del éxito de las tareas
