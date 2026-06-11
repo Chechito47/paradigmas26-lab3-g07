@@ -182,7 +182,7 @@ Se nos pide manejar estos casos de error:
 * Si una suscripcion le falta name o url -> `Warning: Skipping malformed subscription (missing 'name' or 'url' field)`
 
 *Los dos primeros son errores fatales => el programa termina*  
-*La ultima es warning => se interrumpe la ejecucion sin terminar*
+*La ultima es warning => se skipea esa subscripcion y el programa continua procesando las demas*
 
 ### downloadFeed
 * Tenemos que agregar el argumento `subscriptionName: String` para poder hacer un warning relacionado a esta funcion
