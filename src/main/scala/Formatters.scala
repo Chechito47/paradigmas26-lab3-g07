@@ -30,10 +30,10 @@ Largo promedio en posts: $avgChars"""
     collectEntitiesSeconds: Double
   ): String = {
     s"""============ ESTADÍSTICAS DE TIEMPOS ============
-  Tiempo de descarga de posts: $totalPostsSeconds segundos
-  Tiempo de filtrado de posts: $filteredStageSeconds segundos
-  Tiempo de cálculo de promedio de caracteres: $avgCharsSeconds segundos
-  Tiempo de cálculo de entidades: $collectEntitiesSeconds segundos"""
+Tiempo de descarga de posts: $totalPostsSeconds segundos
+Tiempo de filtrado de posts: $filteredStageSeconds segundos
+Tiempo de cálculo de promedio de caracteres: $avgCharsSeconds segundos
+Tiempo de cálculo de entidades: $collectEntitiesSeconds segundos"""
   }
 
   /**

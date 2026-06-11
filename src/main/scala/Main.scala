@@ -50,6 +50,7 @@ object Main {
     val feedsSuccess = sc.longAccumulator("feedsSuccess")
     val feedsFailed = sc.longAccumulator("feedsFailed")
     val postsSuccess = sc.longAccumulator("postsSuccess")
+    val postsFailed = sc.longAccumulator("postsFailed")
     val postsFiltered = sc.longAccumulator("postsFiltered")
 
     // --- PASO 4: Descargar feeds y parsear posts (worker) ---
@@ -69,7 +70,7 @@ object Main {
           val posts = JsonParser.parsePosts(content, subscription.name)
           
           if (posts.isEmpty){
-            feedsFailed.add(1)
+            postsFailed.add(1)
             println(s"Warning: Failed to parse posts from '${subscription.name}' (${subscription.url})")}
 
           else {
@@ -112,6 +113,7 @@ object Main {
     val feedsSuccessValue  = feedsSuccess.value
     val feedsFailedValue   = feedsFailed.value
     val postsSuccessValue  = postsSuccess.value
+    val postsFailedValue = postsFailed.value
     val postsFilteredValue = postsFiltered.value
 
     // Calculamos el promedio de caracteres sobre los posts filtrados
@@ -130,7 +132,7 @@ object Main {
       "feedsSuccess"  -> feedsSuccessValue,
       "feedsFailed"   -> feedsFailedValue,
       "postsSuccess"  -> postsSuccessValue,
-      "postsFailed"   -> 0L,
+      "postsFailed"   -> postsFailedValue,
       "postsFiltered" -> postsFilteredValue,
       "avgChars"      -> avgChars
     )))
