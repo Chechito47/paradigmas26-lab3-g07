@@ -38,7 +38,7 @@ sbt run
 
 With custom parameters:
 ```bash
-sbt "run --subscription-file subscriptions.json --entities-dir data --top-k 15"
+sbt "run --subscription-file data/local_subscriptions.json --entities-dir data/valid_entities --top-k 15"
 ```
 
 ### Command-Line Arguments
